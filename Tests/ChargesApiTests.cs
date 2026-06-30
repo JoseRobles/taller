@@ -1,18 +1,64 @@
+using System.Collections.Generic;
 using System.Net;
 using System.Net.Http.Json;
+using System.Security.Claims;
+using System.Text.Encodings.Web;
 using System.Threading.Tasks;
+using Microsoft.AspNetCore.Authentication;
 using Microsoft.AspNetCore.Mvc.Testing;
+using Microsoft.Extensions.Configuration;
+using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Options;
 using Xunit;
 
 namespace ChargesApi.Tests;
 
+/// <summary>
+/// Fake authentication handler that auto-succeeds for integration tests.
+/// </summary>
+public class TestAuthHandler : AuthenticationHandler<AuthenticationSchemeOptions>
+{
+    public TestAuthHandler(
+        IOptionsMonitor<AuthenticationSchemeOptions> options,
+        ILoggerFactory logger,
+        UrlEncoder encoder)
+        : base(options, logger, encoder) { }
+
+    protected override Task<AuthenticateResult> HandleAuthenticateAsync()
+    {
+        var identity = new ClaimsIdentity(new[]
+        {
+            new Claim(ClaimTypes.Name, "testuser@example.com"),
+        }, "TestScheme");
+
+        var principal = new ClaimsPrincipal(identity);
+        var ticket = new AuthenticationTicket(principal, "TestScheme");
+        return Task.FromResult(AuthenticateResult.Success(ticket));
+    }
+}
+
 // Happy-path smoke tests for the charges service.
-// These tests currently pass. That doesn't mean the service is correct.
 public class ChargesApiTests : IClassFixture<WebApplicationFactory<Program>>
 {
     private readonly WebApplicationFactory<Program> _factory;
 
-    public ChargesApiTests(WebApplicationFactory<Program> factory) => _factory = factory;
+    public ChargesApiTests(WebApplicationFactory<Program> factory)
+    {
+        _factory = factory.WithWebHostBuilder(builder =>
+        {
+            // Provide a fake Stripe key so PaymentProcessor doesn't throw
+            builder.UseSetting("Stripe:ApiKey", "sk_test_fake_key_for_tests");
+
+            builder.ConfigureServices(services =>
+            {
+                // Replace Entra auth with a fake test scheme
+                services.AddAuthentication("TestScheme")
+                    .AddScheme<AuthenticationSchemeOptions, TestAuthHandler>(
+                        "TestScheme", _ => { });
+            });
+        });
+    }
 
     [Fact]
     public async Task CreateChargeReturns201ForAFreshKey()
